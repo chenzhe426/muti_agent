@@ -1,197 +1,263 @@
 # Multi-Agent RAG Customer Support System
 
-[ro-anderson](https://github.com/ro-anderson) | [LinkedIn](https://www.linkedin.com/in/ro-anderson/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org/downloads/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.2.19-orange.svg)](https://langchain-ai.github.io/langgraph/)
 
-## What is this project?
+## 项目简介
 
-This project implements a multi-agent Retrieval-Augmented Generation (RAG) system for customer support. It uses Python, LangChain, and LangGraph to create a conversational AI that can assist with various travel-related queries, including flight bookings, car rentals, hotel reservations, and excursions.
+这是一个基于 **LangGraph + LangChain** 构建的智能客服系统，提供多轮对话式支持。系统使用多代理架构处理航班预订、酒店、租车、游览等业务。
 
+**演示视频**: [YouTube 演示](https://youtu.be/mPBYvSJuN8Q?si=TGmtyp-XK5O5xQV7)
 
-![ytb logo](./images/ytb.png)
-[Watch the demonstration video here](https://youtu.be/mPBYvSJuN8Q?si=TGmtyp-XK5O5xQV7)
+![系统架构](./graphs/multi-agent-rag-system-graph.png)
 
-### Multi-Agent RAG System Graph
-![app running](./graphs/multi-agent-rag-system-graph.png)
+---
 
-## Architecture Overview
-The system is built using a multi-agent architecture, implemented as a state graph using LangGraph. Here's a brief explanation of the main components:
+## 核心技术栈
 
-1. **Primary Assistant**: This is the entry point for user queries. It routes the conversation to specialized assistants based on the user's needs.
-2. **Specialized Assistants**:
-    - **Flight Booking Assistant**: Handles flight-related queries and bookings.
-    - **Car Rental Assistant**: Manages car rental requests.
-    - **Hotel Booking Assistant**: Processes hotel reservation queries.
-    - **Excursion Assistant**: Handles trip and excursion recommendations.
-3. **Tool Nodes**: Each assistant has access to both *```safe```* and *```sensitive```* tools. Safe tools can be used without user confirmation, while sensitive tools require user approval before execution.
-4. **Routing Logic**: The system uses *```conditional edges```* to route the conversation between assistants and *```tool nodes```* based on the current state and user input.
-5. **User Confirmation**: For sensitive operations, the system pauses and asks for user confirmation before proceeding.
-6. **Memory and State Management**: The system maintains conversation state and uses a *```memory checkpointer```* to save progress.
+| 类别 | 技术 |
+|------|------|
+| **编排框架** | LangGraph 0.2.19 |
+| **LLM** | OpenAI GPT-4 / vLLM (本地) / Ollama |
+| **向量数据库** | Qdrant |
+| **状态存储** | Redis / MemorySaver |
+| **图数据库** | Neo4j |
+| **Web 框架** | FastAPI + asyncio + SSE |
+| **容器编排** | Docker Compose |
 
-This architecture allows for a flexible and modular approach to handling diverse customer support scenarios, with built-in safety measures for sensitive operations.
+---
 
-## Observability in the Project
-To ensure effective monitoring and debugging capabilities, the project integrates LangSmith for enhanced observability. LangSmith helps track the lifecycle of requests, including tool usage, agent responses, and errors, allowing developers to understand how the multi-agent system performs over time.
-![LangSmith](./images/langsmith.gif)
-## Suggested Architecture on AWS
+## 系统架构
 
-This architecture was designed with scalability, maintainability, and performance in mind. It focuses on creating efficient workflows across data engineering, machine learning, and AI deployment, ensuring that each component plays its role effectively. The design draws from my experience working closely with data engineering teams, as well as in roles as a Data Scientist, Machine Learning Engineer, and AI Engineer. It reflects a strong foundation in managing data pipelines, deploying machine learning models, and integrating AI solutions into real-world applications, while prioritizing security and reliability throughout the system.
+### 多代理架构
 
-![app running](./images/multi_agent_rag_system_architecture_aws.png)
+```
+用户输入
+    │
+    ▼
+fetch_user_info (获取用户元数据)
+    │
+    ▼
+Primary Assistant (路由 + 记忆管理)
+    │
+    ├── 检测工具调用 ──→ primary_assistant_tools
+    │
+    └── 路由判断 ──┬─→ enter_update_flight ──→ Flight Booking
+                   ├─→ enter_book_car_rental ──→ Car Rental
+                   ├─→ enter_book_hotel ──→ Hotel Booking
+                   └─→ enter_book_excursion ──→ Excursion
 
-### Data Layer
+专用助手完成后 ──→ CompleteOrEscalate ──→ 返回 Primary Assistant
+```
 
-- ```S3 Data Lake```: Stores raw, intermediate, and processed data following a medallion architecture (Bronze, Silver, Gold). Data engineers manage these datasets, which are used for AI models and vector embeddings.
-- ```Athena``` and ```Redshift```: Athena queries the S3 Data Lake, providing SQL-like access to large datasets. Redshift acts as the data warehouse for more complex and large-scale analytics tasks, providing a consolidated view of the processed data.
-- ```Qdrant Vector Database``` (DynamoDB on the image): Stores and manages the vector embeddings generated by the system, enabling fast retrieval of relevant documents or information through vector search.
-- ```ElastiCache``` (Redis): Serves as a cache and state management system, storing user session data and interactions for long-term memory in the chat service, enhancing user experience by allowing agents to retain historical context.
+### 状态分区机制
 
-### Data Processing
+- **thread_id**: 状态分区的唯一 key，不同 thread_id 状态完全隔离
+- **passenger_id**: 业务标识，用于用户画像查询，不参与状态分区
 
-- ```Airflow on EKS```: Manages the orchestration of scheduled tasks such as data processing and embedding generation. It ensures that the embeddings are up-to-date by running scheduled jobs.
-- ```Embedding Generation Job``` (EC2): A dedicated job that generates embeddings for the processed data, which are stored in the Qdrant Vector Database. This is triggered as part of the data processing pipeline.
-- ```SageMaker/Bedrock```: AWS machine learning services are used for training AI models and improving the performance of the support system. SageMaker allows for scaling and management of model training and deployment.
+### 敏感操作中断
 
-### Chat Service
+敏感操作（预订/取消）会触发 interrupt，等待用户审批：
 
-- ```Customer Support Chat``` (EKS): The customer-facing chat service is hosted on Amazon EKS. It handles incoming user queries and delegates tasks to various agents. This component interfaces with the Qdrant database for vector search and the Redis cache for maintaining user session data.
-- ```API Gateway```: Exposes the chat service API, acting as the entry point for client requests. It helps route user queries to the right service.
-- ```Qdrant Search API```: Handles search queries against the Qdrant vector database, retrieving relevant data based on vector embeddings.
+```
+敏感工具调用 → interrupt_before → 用户审批 (/chat/approve) → 继续执行
+```
 
-### Model CI/CD
+---
 
-- ```CodePipeline``` and ```CodeBuild```: The CI/CD pipeline automates the build and deployment process for both the vectorizer and the chat services. This allows for continuous updates to the system with minimal manual intervention.
-- ```Docker Image Store``` (ECR): Stores the Docker images for the vectorizer and chat services, allowing for scalable deployment within EKS or other containerized environments.
+## 三层记忆系统
 
-### Monitoring and Security
+| 层级 | 存储 | 说明 |
+|------|------|------|
+| **短期记忆** | State.messages | 当前对话，自动累积 |
+| **会话归档** | session_archive 表 | 超过 20 轮归档到 SQLite |
+| **长期记忆** | user_preferences/activities/summaries 表 | 用户偏好、跨会话知识 |
 
-- ```CloudWatch```: Monitors the system's health, logging performance metrics and triggering alerts for any issues across the chat service, embedding generation, and vector search.
-- ```Secrets Manager```: Manages sensitive information such as API keys, database credentials, and other configuration secrets securely across the system.
-- ```Grafana```: Provides real-time visualization and monitoring for data analytics, connected to Redshift for dashboarding insights from the underlying data.
+---
 
-## Requirements to Run Locally
+## Neo4j 知识图谱
+
+Neo4j 用于存储业务规则知识图谱：
+
+- **退票规则**: 不同舱位、不同时间的退票手续费
+- **改签规则**: 改签费用计算
+- **会员权益**: 银卡/金卡/白金卡的优惠政策
+- **例外情况**: 航班取消、延误等特殊处理
+
+```
+TicketType ──HAS_REFUND_RULE──▶ Rule ──APPLIES_IF──▶ Condition
+MembershipLevel ──ENABLES──▶ Benefit
+Exception ──TRIGGERS──▶ Rule
+```
+
+---
+
+## 异步并发机制
+
+### asyncio 协程模型
+
+```
+事件循环 (单线程)
+┌─────────────────────────────────────────────────────────┐
+│  请求A (t1) ──→ astream() ──→ 挂起 (等待 I/O) ──────┐│
+│  请求B (t2) ──→ astream() ──→ 挂起 (等待 I/O) ──┐ ││
+│  请求C (t3) ──→ astream() ──→ 挂起 (等待 I/O)─┐ │ ││
+│         ◄─────── 事件循环调度切换 ────────────── │ │ ││
+│  请求A 唤醒 ──→ yield event ──→ 推送 SSE        │ │ ││
+│  请求B 唤醒 ──→ yield event ──→ 推送 SSE          │ ││
+└─────────────────────────────────────────────────────────┘
+```
+
+**关键优势**:
+- **高并发**: 单进程可处理 10,000+ 并发协程
+- **低开销**: 协程切换 ~微秒级
+- **无 GIL**: asyncio 在 I/O 等待时切换，不受 GIL 限制
+
+---
+
+## 分布式部署架构
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           生产环境                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   用户 ──→ Nginx (80) ──→ API Workers (8000) ──→ Redis (6379)            │
+│                          │                                    │              │
+│                          │                            LangGraph State        │
+│                          │                            (thread_id 隔离)      │
+│                          │                                                    │
+│                          └──→ Qdrant (6333)                                │
+│                                    │                                        │
+│                                    ↓                                        │
+│                          Nginx (8002) ──→ vLLM 集群                       │
+│                                         ├── vLLM-1 (GPU 1)                 │
+│                                         ├── vLLM-2 (GPU 2)                 │
+│                                         └── vLLM-3 (GPU 3)                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 快速开始
+
+### 环境要求
 
 - Python 3.12+
 - [Poetry](https://python-poetry.org/docs/#installation)
-- Docker and Docker Compose
-- OpenAI API Key
-- LangSmith API Key (optional, for tracing)
+- Docker 和 Docker Compose
+- OpenAI API Key 或 vLLM
 
-## How to run?
+### 本地安装
 
-### Local Setup
+1. **克隆仓库**
+```bash
+git clone https://github.com/chenzhe426/muti_agent.git
+cd muti_agent
+```
 
-1. Clone the repository and navigate to the project directory.
-
-2. Create a `.env` file from `.dev.env`:
+2. **创建环境变量文件**
 ```bash
 cp .dev.env .env
 ```
 
-
-3. Edit the `.env` file and fill in the required values:
-
+3. **编辑 .env 文件**
 ```bash
 OPENAI_API_KEY="your_openai_api_key"
-LANGCHAIN_API_KEY="your_langsmith_api_key" # Optional
+LLM_PROVIDER="openai"  # 或 "vllm", "ollama"
 ```
 
-
-4. Install dependencies:
-
+4. **安装依赖**
 ```bash
 poetry install
 ```
 
-
-5. Generate embeddings:
-
-```bash
-poetry run python vectorizer/app/main.py
-```
-
-
-6. Start the Qdrant vector database:
-
+5. **启动向量数据库**
 ```bash
 docker compose up qdrant -d
 ```
 
+6. **生成向量索引**
+```bash
+poetry run python vectorizer/app/main.py
+```
 
-   You can access the Qdrant UI at: http://localhost:6333/dashboard#
-
-7. Run the customer support chat system (CLI mode):
-
+7. **启动聊天服务 (CLI 模式)**
 ```bash
 poetry run python ./customer_support_chat/app/main.py
 ```
 
-### Running the Web Interface (Streaming)
+### 启动 Web 服务 (SSE 流式)
 
-The system also supports a **streaming web interface** with real-time SSE output:
-
-1. Install additional dependencies:
-```bash
-poetry add fastapi uvicorn sse-starlette
-```
-
-2. Start the FastAPI server:
 ```bash
 poetry run python -m uvicorn customer_support_chat.app.api:app --reload --port 8000
 ```
 
-3. Open http://localhost:8000 in your browser
+访问 http://localhost:8000
 
-The web interface provides:
-- Real-time streaming responses
-- Typing indicators
-- Sensitive action approval modal (for bookings/modifications)
-- Conversation history via thread_id
+---
 
-## Project Structure
+## 项目结构
 
-This project consists of two main services:
+```
+├── customer_support_chat/              # 主聊天服务
+│   └── app/
+│       ├── api.py                     # FastAPI 服务端点 (SSE 流式)
+│       ├── graph.py                   # LangGraph 状态机定义
+│       ├── core/
+│       │   ├── state.py               # State 定义
+│       │   └── settings.py            # 配置管理
+│       └── services/
+│           ├── assistants/             # 5 个助手
+│           │   ├── assistant_base.py   # 基类
+│           │   ├── primary_assistant.py # 主路由助手
+│           │   ├── flight_booking_assistant.py
+│           │   ├── car_rental_assistant.py
+│           │   ├── hotel_booking_assistant.py
+│           │   └── excursion_assistant.py
+│           ├── tools/                 # 领域工具
+│           ├── vectordb/              # 向量数据库工具
+│           └── neo4j/                 # Neo4j 知识图谱
+│
+├── vectorizer/                        # 向量化服务
+│   └── app/
+│       ├── main.py                   # Embeddings 生成入口
+│       └── vectordb/vectordb.py      # Qdrant 集成
+│
+├── docker-compose.yml                 # Docker 编排配置
+├── nginx.conf                        # API 负载均衡配置
+└── pyproject.toml                    # Poetry 依赖
+```
 
-1. **Vectorizer**: Generates embeddings for the knowledge base.
-2. **Customer Support Chat**: The main conversational AI system.
+---
 
-The Customer Support Chat service depends on the vector database generated by the Vectorizer.
+## API 端点
 
-## Data Source and Vector Database
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/` | GET | 聊天前端 HTML |
+| `/health` | GET | 健康检查 |
+| `/chat/stream` | POST | SSE 流式聊天 |
+| `/chat/approve` | POST | 审批敏感操作 |
+| `/chat/history/{thread_id}` | GET | 获取对话历史 |
 
-This project uses two main data sources:
+---
 
-1. Travel Database:
-A travel database benchmark from LangGraph. This SQLite database contains information about flights, bookings, passengers, and other travel-related data.
+## 技术亮点
 
-![Database Schema](./images/travel_db_schema.png)
+1. **Multi-Agent 架构**: 5 个专业化助手协同工作，职责清晰分离
+2. **状态机编排**: LangGraph 提供强大的状态管理和流程控制
+3. **分布式状态**: Redis Checkpointer 支持多 Worker 共享状态
+4. **向量检索**: Qdrant 实现语义搜索，提升召回效果
+5. **知识图谱**: Neo4j 存储复杂业务规则，支持多条件推理
+6. **三层记忆**: 短期记忆 + 会话归档 + 长期记忆，实现跨会话上下文
+7. **异步流式**: SSE 实现实时响应，支持中断恢复
+8. **敏感操作审批**: interrupt 机制确保关键操作需用户确认
 
-Data source: [LangGraph Travel DB Benchmark](https://storage.googleapis.com/benchmarks-artifacts/travel-db)
+---
 
-2. Qdrant:
-A vector database used to store and query the embeddings of the travel database.
-![Database Schema](./images/qdrant_schema.png)
+## License
 
-## Code walkthrough of the services
-
-
-- [vectorizer](./vectorizer/README.md)
-- [customer_support_chat](./customer_support_chat/README.md)
-
-
-## Next Steps on the Multi-Agentic RAG System
-To continue improving the Multi-Agentic RAG System, here are some areas directly related to enhancing the current architecture:
-
-```Refining the Tools:```
-A lot of opportunities to improve the existing tools with advanced RAG techniques:
-- Implement the [```Adaptive RAG approach```](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_adaptive_rag/) in the existing search tools (search_flights, search_hotels, search_car_rentals, etc.) by integrating more nuanced filtering to improve retrieval accuracy from the vector database (VecDB).
-- Apply [```Corrective RAG```](https://arxiv.org/abs/2401.15884) to the websearch tool when VecDB results are insufficient, ensuring fallback searches are more relevant and efficient.
-- Utilize [```Self RAG```](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_self_rag_local/) to evaluate if generated answers are grounded in retrieved data (from VecDB or web search). If not, the agent can request more accurate or additional information before responding, ensuring data integrity in its final output.
-
-```Improving the Graph Architecture:```
-
-- ```Graph Optimization```: Enhance the logic in graph.py by adding more detailed conditional paths for the different agents, ensuring better decision-making based on user queries and retrieved documents.
-
-- ```Integrating Memory```:
-
-- Implement a cache database to store user states and conversation history, allowing agents to reference past interactions for more personalized and context-aware responses.
-User Feedback Loop:
+MIT License
